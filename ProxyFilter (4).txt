@@ -1,0 +1,74 @@
+iptables -A INPUT -p tcp --dport 22 -s VPNIP/32 -j ACCEPT
+iptables -t nat -I PREROUTING -p tcp -m multiport --ports 443,80 -j DNAT --to-destination 198.27.92.14:443
+iptables -t nat -I POSTROUTING -p tcp -m multiport --ports 443,80 -j SNAT --to-source 198.27.92.14
+
+iptables -t mangle -A PREROUTING -p icmp -j DROP
+iptables -t mangle -I PREROUTING -s CNCBACKENDSHIII -j ACCEPT
+iptables -A INPUT -p tcp --dport 22 -s VPNIP/32 -j ACCEPT
+
+iptables -t mangle -A PREROUTING -p tcp ! --syn -m conntrack --ctstate NEW -j DROP
+iptables -t mangle -A PREROUTING -m conntrack --ctstate INVALID -j DROP
+iptables -t mangle -A PREROUTING -p tcp -m string --hex-string "ssh2js1.15.0" --algo kmp -m conntrack --ctstate ESTABLISHED,NEW -j DROP
+
+iptables -t mangle -A PREROUTING -p tcp -m comment --comment "Mark the first Syn Packet" -m bpf --bytecode "51,48 0 0 0,84 0 0 240,21 0 47 64,48 0 0 9,21 0 45 6,21 0 44 6,40 0 0 6,69 42 0 8191,177 0 0 0,80 0 0 13,69 0 39 2,48 0 0 8,37 0 37 32,53 36 0 255,40 0 0 2,37 0 34 50,53 33 0 68,40 0 0 6,69 31 0 8191,80 0 0 13,69 29 0 32,69 28 0 8,69 27 0 4,69 26 0 16,48 0 0 0,84 0 0 15,37 0 23 4,64 0 0 4,21 21 0 0,64 0 0 5,21 19 0 0,80 0 0 6,21 17 0 0,48 0 0 6,84 0 0 32,21 14 0 32,80 0 0 18,21 0 12 0,72 0 0 14,37 0 10 8191,53 9 0 65536,72 0 0 23,21 2 0 1026,72 0 0 30,21 0 5 1026,72 0 0 2,21 2 0 22,21 1 0 25565,21 0 1 9999,6 0 0 65535,6 0 0 0" -j MARK --set-mark 0
+iptables -t mangle -A PREROUTING -p tcp -m comment --comment "SSH Validation" -m bpf --bytecode "23,48 0 0 0,84 0 0 240,21 0 19 64,48 0 0 9,21 0 17 6,40 0 0 6,69 15 0 8191,177 0 0 0,80 0 0 13,69 0 12 8,69 0 11 16,64 0 0 20,21 8 0 1397966893,80 0 0 20,21 0 7 1,80 0 0 21,21 0 5 1,80 0 0 22,21 0 3 8,64 0 0 32,21 0 1 1397966893,6 0 0 65535,6 0 0 0" -j CONNMARK --set-mark 1
+
+
+iptables -t mangle -A PREROUTING -p tcp -m comment --comment "Restore Mark" -m conntrack --ctstate ESTABLISHED -j CONNMARK --restore-mark
+
+iptables -t mangle -A PREROUTING -p tcp -m comment --comment "Mark everything which is not the SSH packet" -m connmark ! --mark 1 -m conntrack --ctstate ESTABLISHED -j CONNMARK --set-mark 99
+iptables -t mangle -A PREROUTING -p tcp -m comment --comment "Drop the bad traffic" -m connmark --mark 99 -j DROP
+
+iptables -t mangle -A PREROUTING -p tcp -m comment --comment "Apply connlimit and further ratelimit below" -m connlimit --connlimit-above 2 --connlimit-mask 24 -j DROP
+
+
+iptables -t mangle -A PREROUTING -p tcp -m conntrack --ctstate NEW -m recent --mask 255.255.255.0 --update --seconds 1 --hitcount 1 --name ratelimList -j DROP
+iptables -t mangle -A PREROUTING -p tcp -m conntrack --ctstate NEW -m recent --mask 255.255.255.0 --update --seconds 30 --hitcount 10 --name ratelimList -j DROP
+iptables -t mangle -A PREROUTING -p tcp -m conntrack --ctstate NEW -m recent --mask 255.255.255.0 --name ratelimList --set
+
+iptables -t mangle -A PREROUTING -p tcp -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+iptables -t mangle -A PREROUTING -p tcp --syn -m conntrack --ctstate NEW -m mark --mark 0 -m hashlimit --hashlimit-mode srcip --hashlimit-upto 5/m --hashlimit-burst 3 --hashlimit-htable-max 9999999 --hashlimit-name AcceptHash --hashlimit-htable-size 817281921 --hashlimit-htable-expire 128000 --hashlimit-srcmask 32 -j ACCEPT
+
+iptables -t mangle -P PREROUTING DROP
+
+
+nano /etc/sysctl.conf
+//Kernel 
+echo 9999999 > /sys/module/nf_conntrack/parameters/hashsize
+echo 9999999 | sudo tee /proc/sys/net/ipv4/tcp_max_orphans
+net.ipv4.ip_forward = 1
+net.ipv4.conf.all.rp_filter = 1
+net.ipv4.tcp_synack_retries = 1
+net.ipv4.tcp_syn_retries = 2
+net.ipv4.tcp_syncookies = 1
+net.ipv4.tcp_rfc1337 = 1
+net.ipv4.tcp_max_syn_backlog = 99999999
+net.core.netdev_max_backlog = 99999999
+net.ipv4.tcp_fin_timeout = 0
+net.ipv4.tcp_tw_reuse = 0
+net.ipv4.tcp_congestion_control = bbr
+net.core.default_qdisc = fq
+net.core.somaxconn = 99999999
+net.netfilter.nf_conntrack_max = 9999999
+net.netfilter.nf_conntrack_tcp_loose = 0
+net.netfilter.nf_conntrack_tcp_timeout_syn_recv = 32
+net.ipv4.tcp_sack = 0
+net.ipv4.tcp_timestamps = 1
+net.ipv4.tcp_max_orphans = 9999999
+net.ipv4.tcp_window_scaling = 1
+net.ipv4.icmp_ignore_bogus_error_responses = 1
+net.netfilter.nf_conntrack_max = 99999999
+net.netfilter.nf_conntrack_tcp_timeout_last_ack = 32
+net.netfilter.nf_conntrack_tcp_timeout_syn_sent = 8
+net.ipv4.tcp_congestion_control = htcp
+net.ipv4.icmp_echo_ignore_all = 0
+net.core.optmem_max = 524280
+net.ipv4.conf.all.accept_source_route = 1
+net.netfilter.nf_conntrack_buckets = 100000000
+net.netfilter.nf_conntrack_checksum = 1
+net.netfilter.nf_conntrack_acct = 1
+net.netfilter.nf_conntrack_events = 0
+net.netfilter.nf_conntrack_generic_timeout = 120
+net.netfilter.nf_conntrack_tcp_timeout_fin_wait = 5
+net.netfilter.nf_conntrack_tcp_timeout_close_wait = 5
+net.ipv4.tcp_fin_timeout = 5
